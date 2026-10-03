@@ -1,0 +1,378 @@
+import os
+import sqlite3
+import json
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import httpx
+from typing import List, Optional, Dict, Any
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import re
+from pathlib import Path
+from pydantic import Field
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI(title="Insurance Claim Platform", docs_url=None, redoc_url=None)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+configured_db = os.getenv("SQLITE_DB", "cache.db")
+DB_PATH = configured_db if os.path.isabs(configured_db) else str(BASE_DIR / configured_db)
+TEST_DATA_PATH = str(BASE_DIR / "tests" / "test_data.json")
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in {"1", "true", "yes"}
+
+def load_test_data():
+    try:
+        with open(TEST_DATA_PATH, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[TEST DATA] Error loading test data: {e}")
+        return {"providers": {}, "conditions": {}}
+
+TEST_DATA = load_test_data()
+print(f"[TEST DATA] Loaded providers: {list(TEST_DATA.get('providers', {}).keys())}")
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS hospital_cache (
+                    key TEXT PRIMARY KEY,
+                    value TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS doctor_cache (
+                    key TEXT PRIMARY KEY,
+                    value TEXT)''')
+    conn.commit()
+    conn.close()
+
+def get_cache(table: str, key: str) -> Optional[Any]:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(f'SELECT value FROM {table} WHERE key=?', (key,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        try:
+            return json.loads(row[0])
+        except:
+            return row[0]
+    return None
+
+def set_cache(table: str, key: str, value: Any):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(f'''INSERT OR REPLACE INTO {table} (key, value) VALUES (?, ?)''',
+              (key, json.dumps(value)))
+    conn.commit()
+    conn.close()
+
+init_db()
+
+class ClaimRequest(BaseModel):
+    insurance_id: str = Field(min_length=1, max_length=128)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    condition: str = Field(min_length=1, max_length=200)
+
+class HospitalInfo(BaseModel):
+    name: str
+    address: str
+    latitude: float
+    longitude: float
+    distance_meters: Optional[float] = None
+    duration_seconds: Optional[float] = None
+
+class DoctorInfo(BaseModel):
+    name: str
+    specialty: str
+    npi: str
+    phone: Optional[str] = None
+
+class ClaimResponse(BaseModel):
+    insurance_valid: bool
+    provider_name: str
+    facilities: List[HospitalInfo]
+    doctors: List[DoctorInfo]
+    alternatives: List[Dict[str, Any]] = []
+    map_url: Optional[str] = None
+
+async def validate_insurance_with_nvidia(insurance_id: str, condition: str, lat: float, lon: float) -> Dict[str, Any]:
+    if not DEMO_MODE:
+        return {"valid": False, "provider": "Unknown", "reason": "Live insurance eligibility is not configured."}
+    return validate_insurance_regex(insurance_id)
+    # Legacy LLM verification code below is intentionally unreachable.
+    if not NVIDIA_API_KEY:
+        return validate_insurance_regex(insurance_id)
+    
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {NVIDIA_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    prompt = f"""
+    You are an AI insurance verification officer for Indian health insurance (ABHA, Star Health, ICICI Lombard, HDFC Ergo, Bajaj Allianz, Tata AIG, New India Assurance, etc.).
+    Verify if the Insurance ID '{insurance_id}' is valid and accepted in the location (lat: {lat}, lon: {lon}) for treating the medical condition '{condition}'.
+    Return ONLY a JSON object with this exact schema:
+    {{"valid": true or false, "provider": "Provider Name or Unknown", "reason": "explanation if invalid"}}
+    """
+    payload = {
+        "model": "meta/llama-3.1-70b-instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.0,
+        "max_tokens": 200
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            content = content.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(content)
+            return parsed
+        except Exception as e:
+            print(f"[NVIDIA] API verification error: {e}, falling back to regex")
+            return validate_insurance_regex(insurance_id)
+
+def validate_insurance_regex(insurance_id: str) -> Dict[str, Any]:
+    if not insurance_id or not insurance_id.strip():
+        return {"valid": False, "provider": "Unknown", "reason": "Insurance ID is empty."}
+    for code, info in TEST_DATA.get("providers", {}).items():
+        pattern = info.get("regex")
+        if pattern and re.match(pattern, insurance_id.strip(), re.IGNORECASE):
+            return {"valid": True, "provider": info.get("name", code), "reason": "Verified via pattern matching."}
+    return {"valid": False, "provider": "Unknown", "reason": "Insurance ID format not recognized for Indian providers."}
+
+async def find_hospitals(lat: float, lon: float, insurance_id: str) -> List[HospitalInfo]:
+    # Facility registry integration is not configured; return an honest empty result.
+    return []
+    # Return mock hospitals for reliable testing; ensures UI works without external API delays
+    mock_facilities = [
+        ("Apollo Hospitals, Jubilee Hills", 0.008, 0.005, "Road No 36, Jubilee Hills, Hyderabad"),
+        ("Care Hospitals, HITEC City", -0.004, 0.007, "Old Mumbai Hwy, Jayabheri Pine Valley, Gachibowli"),
+        ("KIMS Hospitals, Kondapur", 0.012, -0.003, "Near Botanical Garden, Kondapur, Hyderabad"),
+        ("Yashoda Hospitals, Hitec City", 0.003, -0.009, "Hitec City Main Rd, Madhapur, Hyderabad"),
+        ("Sunshine Hospitals, Gachibowli", -0.009, -0.004, "Near Flyover, Gachibowli, Hyderabad")
+    ]
+    hospitals = []
+    for name, dlat, dlon, addr in mock_facilities:
+        hospitals.append(HospitalInfo(
+            name=name,
+            address=addr,
+            latitude=lat + dlat,
+            longitude=lon + dlon
+        ))
+    hospitals.sort(key=lambda h: (h.latitude-lat)**2 + (h.longitude-lon)**2)
+    hospitals = hospitals[:5]
+    cache_key = f"hosp:{lat:.5f},{lon:.5f},{insurance_id}"
+    set_cache("hospital_cache", cache_key, [h.dict() for h in hospitals])
+    return hospitals
+
+    cache_key = f"hosp:{lat:.5f},{lon:.5f},{insurance_id}"
+    print(f"[HOSPITALS] Looking up cache key: {cache_key}")
+    cached = get_cache("hospital_cache", cache_key)
+    if cached and len(cached) > 0:
+        print(f"[HOSPITALS] Cache hit with {len(cached)} items")
+        return [HospitalInfo(**h) for h in cached]
+
+    hospitals = []
+    overpass_url = "https://overpass-api.de/api/interpreter"
+    query = f"""
+    [out:json][timeout:15];
+    (
+      node["amenity"="hospital"](around:10000,{lat},{lon});
+      way["amenity"="hospital"](around:10000,{lat},{lon});
+      relation["amenity"="hospital"](around:10000,{lat},{lon});
+      node["amenity"="clinic"](around:10000,{lat},{lon});
+      way["amenity"="clinic"](around:10000,{lat},{lon});
+      relation["amenity"="clinic"](around:10000,{lat},{lon});
+    );
+    out center;
+    """
+    print(f"[OVERPASS] Querying for lat={lat}, lon={lon}")
+    start = time.time()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            resp = await client.post(overpass_url, data={"data": query})
+            elapsed = time.time() - start
+            print(f"[OVERPASS] Response received in {elapsed:.2f}s, status={resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+            elements = data.get("elements", [])
+            print(f"[OVERPASS] Received {len(elements)} elements")
+            for el in elements:
+                if el.get("lat") and el.get("lon"):
+                    lat_h, lon_h = el["lat"], el["lon"]
+                elif el.get("center"):
+                    lat_h, lon_h = el["center"]["lat"], el["center"]["lon"]
+                else:
+                    continue
+                name = el.get("tags", {}).get("name", "Unnamed Hospital")
+                tags = el.get("tags", {})
+                parts = []
+                if tags.get("addr:housenumber"): parts.append(tags["addr:housenumber"])
+                if tags.get("addr:street"): parts.append(tags["addr:street"])
+                if tags.get("addr:city"): parts.append(tags["addr:city"])
+                if tags.get("addr:postcode"): parts.append(tags["addr:postcode"])
+                address = ", ".join(parts) if parts else "Empanelled Hospital, Local Area"
+                hospitals.append(HospitalInfo(
+                    name=name,
+                    address=address,
+                    latitude=lat_h,
+                    longitude=lon_h
+                ))
+            print(f"[OVERPASS] Processed {len(hospitals)} hospitals from OSM")
+        except Exception as e:
+            print(f"[OVERPASS] Fetch error: {e}")
+
+    # Fallback to realistic Indian network hospitals if Overpass timed out or returned empty
+    if not hospitals:
+        print("[HOSPITALS] No hospitals from Overpass, using fallback mock data for Indian network")
+        mock_facilities = [
+            ("Apollo Hospitals, Jubilee Hills", 0.008, 0.005, "Road No 36, Jubilee Hills, Hyderabad"),
+            ("Care Hospitals, HITEC City", -0.004, 0.007, "Old Mumbai Hwy, Jayabheri Pine Valley, Gachibowli"),
+            ("KIMS Hospitals, Kondapur", 0.012, -0.003, "Near Botanical Garden, Kondapur, Hyderabad"),
+            ("Yashoda Hospitals, Hitec City", 0.003, -0.009, "Hitec City Main Rd, Madhapur, Hyderabad"),
+            ("Sunshine Hospitals, Gachibowli", -0.009, -0.004, "Near Flyover, Gachibowli, Hyderabad")
+        ]
+        for name, dlat, dlon, addr in mock_facilities:
+            hospitals.append(HospitalInfo(
+                name=name,
+                address=addr,
+                latitude=lat + dlat,
+                longitude=lon + dlon
+            ))
+        print(f"[HOSPITALS] Added {len(hospitals)} mock hospitals")
+    else:
+        print("[HOSPITALS] Using real OSM data, no fallback needed")
+
+    hospitals.sort(key=lambda h: (h.latitude-lat)**2 + (h.longitude-lon)**2)
+    hospitals = hospitals[:5]
+    print(f"[HOSPITALS] Returning {len(hospitals)} hospitals after sorting/truncation")
+    set_cache("hospital_cache", cache_key, [h.dict() for h in hospitals])
+    return hospitals
+
+async def get_travel_time_and_distance(orig_lat, orig_lon, dest_lat, dest_lon):
+    cache_key = f"osrm:{orig_lat:.5f},{orig_lon:.5f}-{dest_lat:.5f},{dest_lon:.5f}"
+    cached = get_cache("hospital_cache", cache_key)
+    if cached:
+        return cached
+    osrm_url = f"http://router.project-osrm.org/route/v1/driving/{orig_lon},{orig_lat};{dest_lon},{dest_lat}?overview=false"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            r = await client.get(osrm_url)
+            r.raise_for_status()
+            data = r.json()
+            if data.get("code") == "Ok" and data.get("routes"):
+                route = data["routes"][0]
+                result = {
+                    "distance_meters": route.get("distance"),
+                    "duration_seconds": route.get("duration")
+                }
+                set_cache("hospital_cache", cache_key, result)
+                return result
+        except Exception as e:
+            print(f"[OSRM] error: {e}")
+    
+    # Simple straight-line math estimate fallback if OSRM is slow or offline
+    dist_deg = ((dest_lat - orig_lat)**2 + (dest_lon - orig_lon)**2)**0.5
+    approx_meters = dist_deg * 111000
+    approx_seconds = (approx_meters / 1000) * 120 # ~30 km/h city speed
+    result = {"distance_meters": round(approx_meters), "duration_seconds": round(approx_seconds)}
+    set_cache("hospital_cache", cache_key, result)
+    return result
+
+async def match_doctors(hospitals: List[HospitalInfo], condition: str) -> List[DoctorInfo]:
+    cond_spec = TEST_DATA.get("conditions", {
+        "fracture": "Orthopedics",
+        "broken bone": "Orthopedics",
+        "flu": "General Physician",
+        "fever": "General Physician",
+        "diabetes": "Endocrinology",
+        "heart": "Cardiology",
+        "chest pain": "Cardiology",
+    })
+    specialty = cond_spec.get(condition.lower().strip(), "General Physician")
+
+    # No trusted doctor registry is configured; never return invented providers.
+    return []
+
+    return [
+        DoctorInfo(name="Dr. Rajesh Sharma", specialty=specialty, npi="IN-MED-8821", phone="+91 40 2360 7777"),
+        DoctorInfo(name="Dr. Priya Rao", specialty=specialty, npi="IN-MED-9104", phone="+91 40 4488 5000"),
+        DoctorInfo(name="Dr. Venkat Reddy", specialty=specialty, npi="IN-MED-4432", phone="+91 40 6767 6767")
+    ]
+
+async def get_alternatives(lat: float, lon: float) -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "telemedicine",
+            "description": "Instant video consultation via ABHA digital health or Practo / Apollo 24/7.",
+            "estimated_cost": "₹0 - ₹500 (Cashless covered)",
+            "provider_example": "Apollo 24|7, Practo, Tata 1mg"
+        },
+        {
+            "type": "cash_pay",
+            "description": "Pay out-of-pocket at network hospital and file reimbursement claim within 30 days.",
+            "estimated_cost": "Varies by treatment; keep original receipts.",
+            "note": "Reimbursement valid across empanelled Indian insurers."
+        }
+    ]
+
+def get_osm_map_url(orig_lat, orig_lon, dest_lat, dest_lon):
+    return f"https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route={orig_lat}%2C{orig_lon}%3B{dest_lat}%2C{dest_lon}"
+
+@app.post("/claim", response_model=ClaimResponse)
+async def submit_claim(request: ClaimRequest):
+    val_result = await validate_insurance_with_nvidia(request.insurance_id, request.condition, request.latitude, request.longitude)
+    insurance_valid = val_result.get("valid", False)
+    provider_name = val_result.get("provider", "Unknown Provider")
+    reason = val_result.get("reason", "")
+
+    print(f"[VALIDATION] insurance_id={request.insurance_id}, condition={request.condition}, valid={insurance_valid}, provider={provider_name}")
+
+    if not insurance_valid:
+        raise HTTPException(
+            status_code=503 if "not configured" in reason.lower() else 400,
+            detail=f"Insurance ID '{request.insurance_id}' is invalid or not accepted for condition '{request.condition}'. Reason: {reason}"
+        )
+
+    hospitals = await find_hospitals(request.latitude, request.longitude, request.insurance_id)
+
+    for h in hospitals:
+        travel = await get_travel_time_and_distance(
+            request.latitude, request.longitude,
+            h.latitude, h.longitude
+        )
+        h.distance_meters = travel.get("distance_meters")
+        h.duration_seconds = travel.get("duration_seconds")
+
+    doctors = await match_doctors(hospitals, request.condition)
+    alternatives = await get_alternatives(request.latitude, request.longitude) if not hospitals else []
+
+    map_url = None
+    if hospitals:
+        first = hospitals[0]
+        map_url = get_osm_map_url(
+            request.latitude, request.longitude,
+            first.latitude, first.longitude
+        )
+
+    return ClaimResponse(
+        insurance_valid=insurance_valid,
+        provider_name=provider_name,
+        facilities=hospitals,
+        doctors=doctors,
+        alternatives=alternatives,
+        map_url=map_url
+    )
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+@app.get("/")
+async def read_root():
+    return FileResponse(str(BASE_DIR / 'static' / 'index.html'))

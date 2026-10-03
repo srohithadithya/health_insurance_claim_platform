@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# run.sh - cross-platform launcher using uv
+
+set -e
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+echo "Creating virtual environment with uv..."
+uv venv --python 3.11 --clear
+
+echo "Activating venv..."
+source .venv/bin/activate
+
+echo "Installing dependencies..."
+uv pip install -r requirements.txt
+
+echo "Starting FastAPI server..."
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
