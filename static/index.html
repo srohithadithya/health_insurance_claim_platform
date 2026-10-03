@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Insurance Claim & Hospital Routing Platform</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <style>
+        :root{
+            --bg:#f4f6f9;--sidebar:#fff;--primary:#2b6cb0;--primary-hover:#2c5282;
+            --text:#2d3748;--muted:#718096;--border:#e2e8f0;--card:#fff;
+            --accent-green:#2f855a;--accent-yellow:#d69e2e;--err-bg:#fff5f5;
+            --err-text:#c53030;
+        }
+        body{
+            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+            background:var(--bg);color:var(--text);margin:0;padding:0;
+            display:flex;height:100vh;overflow:hidden;
+        }
+        #sidebar{
+            width:420px;background:var(--sidebar);border-right:1px solid var(--border);
+            display:flex;flex-direction:column;box-shadow:2px 0 8px rgba(0,0,0,.05);
+            z-index:1000;
+        }
+        .sidebar-header{
+            padding:20px;border-bottom:1px solid var(--border);background:#fff;
+        }
+        .sidebar-header h1{font-size:1.25rem;margin:0 0 4px 0;color:var(--primary);}
+        .sidebar-header p{margin:0;font-size:.85rem;color:var(--muted);}
+        .sidebar-content{padding:20px;overflow-y:auto;flex:1;}
+        .form-group{margin-bottom:16px;}
+        label{display:block;font-size:.85rem;font-weight:600;margin-bottom:6px;color:var(--text);}
+        input{
+            width:100%;padding:10px 12px;border:1px solid var(--border);
+            border-radius:6px;font-size:.95rem;box-sizing:border-box;
+            transition:border-color .2s;
+        }
+        input:focus{outline:none;border-color:var(--primary);
+            box-shadow:0 0 0 3px rgba(43,108,176,.1);}
+        .btn-row{display:flex;gap:10px;margin-top:20px;}
+        button{
+            flex:1;padding:10px 16px;border:none;border-radius:6px;
+            font-size:.95rem;font-weight:600;cursor:pointer;
+            transition:background .2s;
+        }
+        #locateBtn{background:#edf2f7;color:var(--text);}
+        #locateBtn:hover{background:#e2e8f0;}
+        #submitBtn{background:var(--primary);color:#fff;}
+        #submitBtn:hover{background:var(--primary-hover);}
+        #loading{text-align:center;padding:20px;color:var(--muted);font-weight:500;display:none;}
+        #error-box{
+            background:var(--err-bg);color:var(--err-text);
+            padding:12px;border-radius:6px;margin-top:15px;font-size:.9rem;
+            display:none;border:1px solid #feb2b2;
+        }
+        .section{margin-top:24px;}
+        .section h2{
+            font-size:1rem;text-transform:uppercase;letter-spacing:.05em;
+            color:var(--muted);margin-bottom:12px;border-bottom:2px solid var(--border);
+            padding-bottom:6px;
+        }
+        .card{
+            background:var(--card);border:1px solid var(--border);
+            border-radius:6px;padding:14px;margin-bottom:10px;
+            box-shadow:0 1px 3px rgba(0,0,0,.02);transition:transform .1s,box-shadow .1s;
+            cursor:pointer;
+        }
+        .card:hover{
+            border-color:var(--primary);box-shadow:0 4px 6px rgba(0,0,0,.05);
+        }
+        .card h3{margin:0 0 6px 0;font-size:1rem;color:var(--primary);}
+        .card p{margin:0;font-size:.85rem;color:var(--muted);line-height:1.4;}
+        .badge{
+            display:inline-block;padding:2px 8px;font-size:.75rem;font-weight:600;
+            border-radius:4px;background:#ebf8ff;color:#2b6cb0;margin-top:6px;
+        }
+        .ai-card{
+            background:#ebf8ff;border:1px solid #bee3f8;border-radius:6px;
+            padding:14px;font-size:.9rem;color:#2b6cb0;line-height:1.5;
+        }
+        #map{flex:1;height:100%;}
+        #coordinates-info{font-size:.75rem;color:var(--muted);margin-top:4px;}
+        .directions-btn{
+            margin-top:8px;background:#2f855a;color:#fff;border:none;
+            padding:6px 10px;border-radius:4px;font-size:.85rem;cursor:pointer;
+        }
+        .directions-btn:hover{background:#276743;}
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="sidebar-header">
+        <h1>Health & Insurance Routing</h1>
+        <p>Find eligible network hospitals and specialists instantly</p>
+    </div>
+    <div class="sidebar-content">
+        
+        <div class="form-group">
+            <label for="insuranceType">Insurance Type</label>
+            <select id="insuranceType" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font-size:.95rem;background:#fff;margin-bottom:8px;" onchange="document.getElementById('employeeFields').style.display = this.value === 'employee' ? 'block' : 'none';">
+                <option value="personal">Personal Insurance</option>
+                <option value="employee">Employee / Corporate Insurance</option>
+            </select>
+        </div>
+        <div class="form-group" id="employeeFields" style="display:none;">
+            <input type="text" id="companyName" placeholder="Company Name" style="margin-bottom:8px;">
+            <input type="text" id="employeeId" placeholder="Employee ID">
+        </div>
+        <div class="form-group">
+            <label for="insuranceId">Insurance ID</label>
+            <input type="text" id="insuranceId" placeholder="e.g. INS987654 or ABHA1234">
+        </div>
+        <div class="form-group">
+            <label for="condition">Health Condition / Symptom</label>
+            <input type="text" id="condition" placeholder="e.g. fever, fracture, chest pain">
+        </div>
+        <div class="form-group">
+            <label>Your Location (GPS / Manual)</label>
+            <div style="display:flex;gap:8px;">
+                <input type="number" id="lat" placeholder="Latitude" step="any">
+                <input type="number" id="lon" placeholder="Longitude" step="any">
+            </div>
+            <div id="coordinates-info">Click “Use My GPS” to fill automatically.</div>
+        </div>
+        <div class="btn-row">
+            <button id="locateBtn" type="button">Use My GPS</button>
+            <button id="submitBtn" type="button">Find Hospitals</button>
+        </div>
+
+        <div id="loading" style="display:none;">Searching mapped facilities...</div>
+        <div id="error-box" style="display:none;"></div>
+
+        <div class="section">
+            <h2>Insurance Provider</h2>
+            <div class="ai-card" id="providerCard">
+                <strong>Provider:</strong> <span id="providerName">-</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Mapped Nearby Facilities</h2>
+            <div id="hospitalsList"></div>
+        </div>
+
+        <div class="section">
+            <h2>Specialized Doctors</h2>
+            <div id="doctorsList"></div>
+        </div>
+
+        <div class="section" id="altSection" style="display:none;">
+            <h2>Alternative Options</h2>
+            <div id="alternativesList"></div>
+        </div>
+    </div>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        crossorigin=""></script>
+
+<script>
+    // Leaflet map setup
+    const map = L.map('map').setView([17.4483, 78.3915], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const markersLayer = L.layerGroup().addTo(map);
+    const routeLayer = L.layerGroup().addTo(map);
+
+    // DOM elements
+    const locateBtn = document.getElementById('locateBtn');
+    const submitBtn = document.getElementById('submitBtn');
+    const loading = document.getElementById('loading');
+    const errorBox = document.getElementById('error-box');
+    const providerNameEl = document.getElementById('providerName');
+    const hospitalsList = document.getElementById('hospitalsList');
+    const doctorsList = document.getElementById('doctorsList');
+    const altSection = document.getElementById('altSection');
+    const alternativesList = document.getElementById('alternativesList');
+
+    let userLat = null, userLon = null;
+
+    // Get user location via GPS
+    locateBtn.addEventListener('click', () => {
+        if (!navigator.geolocation) {
+            alert('Geolocation not supported by your browser');
+            return;
+        }
+        loading.style.display = 'block';
+        errorBox.style.display = 'none';
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                userLat = pos.coords.latitude;
+                userLon = pos.coords.longitude;
+                document.getElementById('lat').value = userLat;
+                document.getElementById('lon').value = userLon;
+                document.getElementById('coordinates-info').textContent = `Lat: ${userLat.toFixed(6)}, Lon: ${userLon.toFixed(6)}`;
+                loading.style.display = 'none';
+                map.setView([userLat, userLon], 15);
+                // Clear previous markers/route
+                markersLayer.clearLayers();
+                routeLayer.clearLayers();
+                // Add user marker
+                const userIcon = L.divIcon({
+                    className: 'custom-user-marker',
+                    html: '<div style="background:#2b6cb0;width:16px;height:16px;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.3);"></div>',
+                    iconSize: [16,16]
+                });
+                L.marker([userLat, userLon], {icon: userIcon}).addTo(markersLayer)
+                    .bindPopup('<b>Your Location</b>').openPopup();
+            },
+            (err) => {
+                loading.style.display = 'none';
+                errorBox.style.display = 'block';
+                errorBox.textContent = `Unable to get location: ${err.message}`;
+                console.error(err);
+            }
+        );
+    });
+
+    // Submit form
+    submitBtn.addEventListener('click', async () => {
+        const insuranceType = document.getElementById('insuranceType').value;
+        const companyName = document.getElementById('companyName').value.trim();
+        const employeeId = document.getElementById('employeeId').value.trim();
+        const insuranceId = document.getElementById('insuranceId').value.trim();
+        const condition = document.getElementById('condition').value.trim();
+        const latInput = document.getElementById('lat').value.trim();
+        const lonInput = document.getElementById('lon').value.trim();
+
+        if (!insuranceId || !condition) {
+            errorBox.style.display = 'block';
+            errorBox.textContent = 'Please fill Insurance ID and Condition.';
+            return;
+        }
+        if (!latInput || !lonInput) {
+            errorBox.style.display = 'block';
+            errorBox.textContent = 'Please provide latitude and longitude (use GPS or manual).';
+            return;
+        }
+        userLat = parseFloat(latInput);
+        userLon = parseFloat(lonInput);
+        if (isNaN(userLat) || isNaN(userLon)) {
+            errorBox.style.display = 'block';
+            errorBox.textContent = 'Invalid latitude/longitude values.';
+            return;
+        }
+
+        loading.style.display = 'block';
+        errorBox.style.display = 'none';
+        // Clear previous results
+        providerNameEl.textContent = '-';
+        hospitalsList.innerHTML = '';
+        doctorsList.innerHTML = '';
+        alternativesList.innerHTML = '';
+        altSection.style.display = 'none';
+        markersLayer.clearLayers();
+        routeLayer.clearLayers();
+        // Add user marker
+        const userIcon = L.divIcon({
+            className: 'custom-user-marker',
+            html: '<div style="background:#2b6cb0;width:16px;height:16px;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.3);"></div>',
+            iconSize: [16,16]
+        });
+        L.marker([userLat, userLon], {icon: userIcon}).addTo(markersLayer)
+            .bindPopup('<b>Your Location</b>');
+
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
+            const response = await fetch('/claim', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                signal: controller.signal,
+                body: JSON.stringify({
+                    
+                    insurance_id: insuranceId,
+                    latitude: userLat,
+                    longitude: userLon,
+                    condition: condition
+                ,
+                    insurance_type: insuranceType,
+                    company_name: companyName,
+                    employee_id: employeeId
+                })
+            });
+            clearTimeout(timeout);
+            const raw = await response.text();
+            let data;
+            try { data = JSON.parse(raw); }
+            catch (_) { data = {detail: `Request failed (HTTP ${response.status}).`}; }
+            console.log('API response:', data); // DEBUG
+            if (!response.ok) {
+                throw new Error(data.detail || 'Unknown error');
+            }
+            renderResults(data, userLat, userLon);
+        } catch (err) {
+            console.error('Fetch error:', err);
+            errorBox.style.display = 'block';
+            errorBox.textContent = err.name === 'AbortError' ? 'The request timed out. Please try again.' : (err.message || 'Request failed');
+        } finally {
+            loading.style.display = 'none';
+        }
+    });
+
+    function renderResults(data, userLat, userLon) {
+        console.log('renderResults called with:', data); // DEBUG
+        providerNameEl.textContent = data.provider_name || 'Unknown';
+
+        // ---- USER MARKER (ensure present) ----
+        const userIcon = L.divIcon({
+            className: 'custom-user-marker',
+            html: '<div style="background:#2b6cb0;width:16px;height:16px;border:3px solid white;border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,0.3);"></div>',
+            iconSize: [16,16]
+        });
+        markersLayer.clearLayers();
+        L.marker([userLat, userLon], {icon:userIcon}).addTo(markersLayer)
+            .bindPopup('<b>Your Location</b>');
+
+        // ---- HOSPITALS ----
+        const hospList = document.getElementById('hospitalsList');
+        hospList.innerHTML = '';
+        const bounds = [[userLat, userLon]];
+
+        if (data.facilities.length === 0) {
+            hospList.innerHTML = '<p style="color:var(--muted);font-size:.9rem;">No mapped facilities found within 10 km.</p>';
+        } else {
+            data.facilities.forEach((h, idx) => {
+                bounds.push([h.latitude, h.longitude]);
+                const distKm = h.distance_meters ? (h.distance_meters/1000).toFixed(1) : '--';
+                const etaMin = h.duration_seconds ? Math.round(h.duration_seconds/60) : '--';
+                const card = document.createElement('div');
+                card.className = 'card';
+                const title = document.createElement('h3'); title.textContent = h.name;
+                const address = document.createElement('p'); address.textContent = h.address;
+                const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = `Distance: ${distKm} km (~${etaMin} min)`;
+                const directions = document.createElement('button'); directions.className = 'directions-btn'; directions.textContent = 'Directions';
+                directions.dataset.lat = h.latitude; directions.dataset.lon = h.longitude;
+                card.append(title, address, badge, directions);
+                const marker = L.marker([h.latitude, h.longitude]).addTo(markersLayer)
+                    .bindPopup(`<b>${h.name}</b><br>${h.address}<br>Distance: ${distKm} km`);
+
+                card.addEventListener('click', () => {
+                    map.setView([h.latitude, h.longitude], 15);
+                    marker.openPopup();
+                    drawRoute(userLat, userLon, h.latitude, h.longitude);
+                });
+                directions.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const url = `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${userLat}%2C${userLon}%3B${h.latitude}%2C${h.longitude}`;
+                    window.open(url, '_blank');
+                });
+                hospList.appendChild(card);
+            });
+        }
+
+        // ---- DOCTORS ----
+        const docList = document.getElementById('doctorsList');
+        docList.innerHTML = '';
+        if (data.doctors.length === 0) {
+            docList.innerHTML = '<p style="color:var(--muted);font-size:.9rem;">No matching specialists found via NPI registry.</p>';
+        } else {
+            data.doctors.forEach(d => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.cursor = 'default';
+                const title = document.createElement('h3'); title.textContent = d.name;
+                const specialty = document.createElement('p'); specialty.textContent = `Specialty: ${d.specialty}`;
+                const registry = document.createElement('p'); registry.textContent = `Registry ID: ${d.npi}${d.phone ? ` | Phone: ${d.phone}` : ''}`;
+                card.append(title, specialty, registry);
+                docList.appendChild(card);
+            });
+        }
+
+        // ---- ALTERNATIVES ----
+        const altSec = document.getElementById('altSection');
+        const altList = document.getElementById('alternativesList');
+        altList.innerHTML = '';
+        if (data.alternatives && data.alternatives.length > 0) {
+            altSec.style.display = 'block';
+            data.alternatives.forEach(a => {
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.background = '#fffaf0';
+                card.style.borderColor = '#feebc8';
+                card.style.cursor = 'default';
+                const title = document.createElement('h3'); title.textContent = (a.type || 'option').replace('_', ' ').toUpperCase();
+                const description = document.createElement('p'); description.textContent = a.description || a.name || '';
+                card.append(title, description);
+                if (a.estimated_cost) {
+                    const cost = document.createElement('p'); cost.textContent = `Estimated cost: ${a.estimated_cost}`; card.append(cost);
+                }
+                if (a.address) {
+                    const address = document.createElement('p'); address.textContent = a.address; card.append(address);
+                }
+                altList.appendChild(card);
+            });
+        } else {
+            altSec.style.display = 'none';
+        }
+
+        // ---- MAP VIEW ----
+        if (bounds.length > 1) {
+            map.fitBounds(bounds, {padding: [50, 50]});
+        } else {
+            map.setView([userLat, userLon], 13);
+        }
+    }
+
+    function drawRoute(fromLat, fromLon, toLat, toLon) {
+        routeLayer.clearLayers();
+        const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=false&geometries=geojson`;
+        fetch(osrmUrl)
+            .then(r => r.json())
+            .then(data => {
+                if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+                    console.warn('OSRM routing failed');
+                    return;
+                }
+                const coords = data.routes[0].geometry.coordinates;
+                const latLngs = coords.map(c => [c[1], c[0]]);
+                L.polyline(latLngs, {color: '#2b6cb0', weight: 5, opacity: 0.8}).addTo(routeLayer);
+                map.fitBounds(routeLayer.getBounds(), {padding: [30, 30]});
+            })
+            .catch(err => { console.error('Error fetching route:', err); });
+    }
+</script>
+</body>
+</html>
+
+

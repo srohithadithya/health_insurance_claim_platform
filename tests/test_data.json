@@ -1,0 +1,58 @@
+{
+  "providers": {
+    "ABHA": {
+      "regex": "^ABHA[0-9]{6,14}$",
+      "name": "ABHA Health",
+      "country": "IN"
+    },
+    "STAR": {
+      "regex": "^STAR[0-9]{7,13}$",
+      "name": "Star Health and Allied Insurance",
+      "country": "IN"
+    },
+    "ICICI": {
+      "regex": "^ICICI[0-9]{8,12}$",
+      "name": "ICICI Lombard",
+      "country": "IN"
+    },
+    "HDFC": {
+      "regex": "^HDFC[0-9]{8,12}$",
+      "name": "HDFC Ergo",
+      "country": "IN"
+    },
+    "RELIANCE": {
+      "regex": "^RELIANCE[0-9]{8,12}$",
+      "name": "Reliance General Insurance",
+      "country": "IN"
+    },
+    "BAJAJ": {
+      "regex": "^BAJAJ[0-9]{8,12}$",
+      "name": "Bajaj Allianz",
+      "country": "IN"
+    },
+    "TATA": {
+      "regex": "^TATA[0-9]{8,12}$",
+      "name": "Tata AIG",
+      "country": "IN"
+    },
+    "NEWINDIA": {
+      "regex": "^NEWINDIA[0-9]{8,12}$",
+      "name": "New India Assurance",
+      "country": "IN"
+    }
+  },
+  "conditions": {
+    "fever": "General Physician",
+    "flu": "General Physician",
+    "fracture": "Orthopedics",
+    "broken bone": "Orthopedics",
+    "diabetes": "Endocrinology",
+    "heart": "Cardiology",
+    "chest pain": "Cardiology",
+    "asthma": "Pulmonology",
+    "migraine": "Neurology",
+    "covid": "Infectious Disease",
+    "dengue": "General Physician",
+    "hypertension": "General Physician"
+  }
+}
